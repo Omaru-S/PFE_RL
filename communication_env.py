@@ -283,44 +283,42 @@ class ComNetEnv(gym.Env):
 
     def _get_observations(self) -> np.ndarray:
         """
-        Vectorised version – no explicit Python loops.
-
-        Returns
-        -------
-        np.ndarray  shape (max_agents , obs_dim)   dtype float32
+        Optimized vectorized observation generation.
         """
-        n = self.num_agents  # active agents this step
+        n = self.num_agents
         M = self.max_agents
-        g = self.obs_include_global  # bool
+        g = self.obs_include_global
         T = self.current_step / self.max_steps
 
-        # --- core per-agent features ---------------------------------------------
+        # Pre-allocate with zeros
         obs_dim = 7 + (4 if g else 0)
         obs = np.zeros((M, obs_dim), dtype=np.float32)
 
-        # Slice that corresponds to the real agents
-        o = obs[:n]
+        # Batch fill all agent observations at once
+        if n > 0:
+            obs[:n, 0] = self.prev_is_send_cam[:n]
+            obs[:n, 1] = self.prev_is_send_cpm[:n]
+            obs[:n, 2] = self.prev_knowledge[:n] / self.max_knowledge_per_agent
+            obs[:n, 3] = self.prev_bytes[:n] / 1000.0
+            obs[:n, 4] = np.arange(n, dtype=np.float32) / n
+            obs[:n, 5] = (np.arange(n) < self.num_cpm_agents).astype(np.float32)
+            obs[:n, 6] = T
 
-        # Columns 0-6  (base features)
-        o[:, 0] = self.prev_is_send_cam[:n]
-        o[:, 1] = self.prev_is_send_cpm[:n]
-        o[:, 2] = self.prev_knowledge[:n] / self.max_knowledge_per_agent
-        o[:, 3] = self.prev_bytes[:n] / 1_000.0  # KB scale
-        idx = np.arange(n, dtype=np.float32)
-        o[:, 4] = idx / n  # normalised ID
-        o[:, 5] = (idx < self.num_cpm_agents).astype(np.float32)  # CPM capable
-        o[:, 6] = T  # time progress
+            if g and n > 0:
+                # Compute global stats once
+                tot_know = self.prev_knowledge[:n].sum()
+                tot_bytes = self.prev_bytes[:n].sum()
+                norm_know = tot_know / (self.max_knowledge_per_agent * n)
+                norm_bytes = tot_bytes / self.max_bytes_per_step
+                cam_rate = self.prev_is_send_cam[:n].mean()
+                cpm_rate = (self.prev_is_send_cpm[:self.num_cpm_agents].mean()
+                            if self.num_cpm_agents > 0 else 0.0)
 
-        # --- optional shared statistics ------------------------------------------
-        if g:
-            tot_know = self.prev_knowledge[:n].sum()
-            tot_bytes = self.prev_bytes[:n].sum()
-
-            o[:, 7] = tot_know / (self.max_knowledge_per_agent * n)
-            o[:, 8] = tot_bytes / self.max_bytes_per_step
-            o[:, 9] = self.prev_is_send_cam[:n].mean()
-            o[:, 10] = (self.prev_is_send_cpm[:self.num_cpm_agents].mean()
-                        if self.num_cpm_agents > 0 else 0.0)
+                # Broadcast to all agents
+                obs[:n, 7] = norm_know
+                obs[:n, 8] = norm_bytes
+                obs[:n, 9] = cam_rate
+                obs[:n, 10] = cpm_rate
 
         return obs
 
@@ -355,42 +353,40 @@ class ComNetEnv(gym.Env):
 
     def get_state(self) -> np.ndarray:
         """
-        Get global state for centralized training (critic).
-
-        Returns flattened state containing all agent observations plus
-        additional global information.
+        Optimized global state computation with fixed dimensions.
         """
-        # Get padded observations of shape (max_agents, obs_dim)
-        obs = self._get_observations()
+        # Pre-compute statistics
+        if self.num_agents > 0:
+            total_knowledge = self.prev_knowledge[:self.num_agents].sum()
+            total_bytes = self.prev_bytes[:self.num_agents].sum()
 
-        # Compute safe normalized global statistics
-        total_knowledge = np.sum(self.prev_knowledge[:self.num_agents])
-        total_bytes = np.sum(self.prev_bytes[:self.num_agents])
-
-        if self.normalize_reward:
-            norm_knowledge = total_knowledge / (self.max_knowledge_per_agent * self.num_agents)
-            norm_bytes = total_bytes / self.max_bytes_per_step
+            if self.normalize_reward:
+                norm_knowledge = total_knowledge / (self.max_knowledge_per_agent * self.num_agents)
+                norm_bytes = total_bytes / self.max_bytes_per_step
+            else:
+                norm_knowledge = total_knowledge
+                norm_bytes = total_bytes
         else:
-            norm_knowledge = total_knowledge
-            norm_bytes = total_bytes
+            norm_knowledge = norm_bytes = 0.0
 
-        # Mean objects seen by CPM agents
-        mean_objects = (
-            np.mean(self.prev_objects_in_vision) / 10.0 if len(self.prev_objects_in_vision) > 0 else 0.0
-        )
+        mean_objects = (self.prev_objects_in_vision.mean() / 10.0
+                        if len(self.prev_objects_in_vision) > 0 else 0.0)
 
-        # Global state summary vector
-        global_state = [
+        # Create state vector efficiently
+        global_state = np.array([
             self.current_step / self.max_steps,
             norm_knowledge,
             norm_bytes,
             mean_objects
-        ]
+        ], dtype=np.float32)
 
-        # Flatten and concatenate
+        # Get ALL observations (including padded) to maintain fixed size
+        obs = self._get_observations()  # Full size: (max_agents, obs_dim)
+
+        # Concatenate - this ensures fixed state dimension
         state = np.concatenate([obs.flatten(), global_state])
 
-        return state.astype(np.float32)
+        return state
 
     def render(self, mode='human'):
         """Simple text rendering of current state."""

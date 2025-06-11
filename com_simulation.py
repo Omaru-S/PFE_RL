@@ -5,28 +5,12 @@ from policies import naive_policy
 
 def com_bernoulli_step(step: int) -> np.ndarray:
     """
-    One‐step communication simulation.
-
-    Parameters
-    ----------
-    step : int
-        Index of the communication-probability file (…/step_{step}.npz).
-
-    Returns
-    -------
-    np.ndarray
-        Binary matrix of the same shape as the probability matrix:
-        1  → message was successfully delivered
-        0  → delivery failed or was never attempted (probability was 0)
+    Optimized communication simulation using vectorized operations.
     """
-    # Load P(success) for every sender → receiver pair
-    prob_matrix = read_communication_matrix(step)      # shape (N,N)
+    prob_matrix = read_communication_matrix(step)
 
-    # Uniform[0,1) draw for every entry
-    trials = np.random.random(prob_matrix.shape)
-
-    # A delivery succeeds when U < p; zeros stay zero automatically
-    success_matrix = (trials < prob_matrix).astype(np.uint8)
+    # Single vectorized random draw
+    success_matrix = (np.random.random(prob_matrix.shape) < prob_matrix).astype(np.uint8)
 
     return success_matrix
 
@@ -43,28 +27,12 @@ def max_communication_step(step : int) ->  np.ndarray:
 
 def vision_bernoulli_step(step: int) -> np.ndarray:
     """
-    One‐step communication simulation.
-
-    Parameters
-    ----------
-    step : int
-        Index of the communication-probability file (…/step_{step}.npz).
-
-    Returns
-    -------
-    np.ndarray
-        Binary matrix of the same shape as the probability matrix:
-        1  → message was successfully delivered
-        0  → delivery failed or was never attempted (probability was 0)
+    Optimized vision simulation using vectorized operations.
     """
-    # Load P(success) for every sender → receiver pair
-    prob_matrix = read_vision_matrix(step)      # shape (N,N)
+    prob_matrix = read_vision_matrix(step)
 
-    # Uniform[0,1) draw for every entry
-    trials = np.random.random(prob_matrix.shape)
-
-    # A delivery succeeds when U < p; zeros stay zero automatically
-    success_matrix = (trials < prob_matrix).astype(np.uint8)
+    # Single vectorized random draw
+    success_matrix = (np.random.random(prob_matrix.shape) < prob_matrix).astype(np.uint8)
 
     return success_matrix
 

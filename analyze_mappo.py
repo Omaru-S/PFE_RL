@@ -14,7 +14,7 @@ def load_model(checkpoint_path: str, obs_dim: int, state_dim: int, device: str =
     actor = Actor(obs_dim=obs_dim).to(device)
     critic = Critic(state_dim=state_dim).to(device)
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     actor.load_state_dict(checkpoint['actor_state_dict'])
     critic.load_state_dict(checkpoint['critic_state_dict'])
 
@@ -62,11 +62,13 @@ def analyze_policy(env, actor, num_episodes: int = 10, device: str = 'cpu'):
             cpm_sent = (valid_actions >= 2).sum()
 
             cam_rates.append(cam_sent / env.num_agents)
+            cam_rates.append(cam_sent / env.num_agents)
             cpm_rates.append(cpm_sent / min(env.num_cpm_agents, env.num_agents))
             knowledge_per_step.append(info['total_knowledge'])
             bytes_per_step.append(info['total_bytes'])
 
-        action_patterns.append(np.array(episode_actions))
+        # Store as list since episode_actions may have variable lengths
+        action_patterns.append(episode_actions)
 
     return {
         'action_counts': action_counts,
@@ -150,12 +152,24 @@ def plot_policy_analysis(stats: Dict):
 
     # Temporal patterns
     if len(stats['action_patterns']) > 0:
-        pattern = stats['action_patterns'][0]  # First episode
-        if len(pattern) > 0:
-            # Show first 50 agents, first 20 steps
-            pattern_subset = pattern[:min(20, len(pattern)), :min(50, pattern.shape[1])]
-            sns.heatmap(pattern_subset.T, ax=axes[1, 2], cmap='viridis',
-                        cbar_kws={'label': 'Action'})
+        pattern_episode = stats['action_patterns'][0]  # First episode
+        if len(pattern_episode) > 0:
+            # Convert list of variable-length arrays to a padded matrix
+            max_agents = max(len(step_actions) for step_actions in pattern_episode)
+            max_steps = min(20, len(pattern_episode))
+            max_agents_to_show = min(50, max_agents)
+
+            # Create padded pattern matrix
+            pattern_matrix = np.full((max_steps, max_agents_to_show), -1, dtype=int)
+            for t, step_actions in enumerate(pattern_episode[:max_steps]):
+                n_agents = min(len(step_actions), max_agents_to_show)
+                pattern_matrix[t, :n_agents] = step_actions[:n_agents]
+
+            # Mask invalid entries
+            pattern_matrix = np.ma.masked_where(pattern_matrix == -1, pattern_matrix)
+
+            sns.heatmap(pattern_matrix.T, ax=axes[1, 2], cmap='viridis',
+                        cbar_kws={'label': 'Action'}, mask=(pattern_matrix.T == -1))
             axes[1, 2].set_title('Action Pattern (First Episode)')
             axes[1, 2].set_xlabel('Step')
             axes[1, 2].set_ylabel('Agent ID')
@@ -260,7 +274,7 @@ def compare_policies(env, actor_trained, num_episodes: int = 10, device: str = '
 def main():
     """Main analysis script."""
     # Configuration
-    model_dir = "mappo_runs/latest"  # Update with your actual directory
+    model_dir = "mappo_runs/20250610_151019"  # Update with your actual directory
     checkpoint = "best_model.pt"
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -282,6 +296,8 @@ def main():
 
     # Get dimensions
     obs_dim = test_env.observation_space.shape[0]
+    # Reset environment first to initialize state variables
+    test_env.reset()
     state_dim = len(test_env.get_state())
 
     # Load model

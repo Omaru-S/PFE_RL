@@ -129,11 +129,11 @@ def compute_gae(rewards, values, dones, masks, gamma=0.99, lam=0.95):
 
 
 def collect_rollout(env, actor, critic, buffer, rollout_length, device):
-    """Collect trajectory data."""
+    """Optimized rollout collection."""
     obs = env.reset()
     state = env.get_state()
 
-    # Initial value
+    # Batch initial value computation
     with torch.no_grad():
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
         value = critic(state_tensor).cpu().numpy().flatten()[0]
@@ -142,19 +142,24 @@ def collect_rollout(env, actor, critic, buffer, rollout_length, device):
     buffer.values[0] = value
 
     for step in range(rollout_length):
-        # Get mask for valid agents
-        mask = np.zeros(env.max_agents)
+        # Create mask once
+        mask = np.zeros(env.max_agents, dtype=np.float32)
         mask[:env.num_agents] = 1.0
 
-        # Sample actions
+        # Batch action sampling - only process active agents
         with torch.no_grad():
-            obs_tensor = torch.FloatTensor(obs).to(device)
+            active_obs = obs[:env.num_agents]
+            obs_tensor = torch.FloatTensor(active_obs).to(device)
             dist = actor(obs_tensor)
-            actions = dist.sample()
-            log_probs = dist.log_prob(actions)
+            active_actions = dist.sample()
+            active_log_probs = dist.log_prob(active_actions)
 
-            actions = actions.cpu().numpy()
-            log_probs = log_probs.cpu().numpy()
+            # Pad to full size
+            actions = np.zeros(env.max_agents, dtype=np.int64)
+            log_probs = np.zeros(env.max_agents, dtype=np.float32)
+
+            actions[:env.num_agents] = active_actions.cpu().numpy()
+            log_probs[:env.num_agents] = active_log_probs.cpu().numpy()
 
         # Step environment
         next_obs, rewards, done, info = env.step(actions)
@@ -206,6 +211,16 @@ def ppo_update(actor, critic, actor_optimizer, critic_optimizer, data,
     old_log_probs_flat = old_log_probs.reshape(T * N)
     masks_flat = masks.reshape(T * N)
 
+    # Pre-filter valid indices
+    valid_indices = torch.where(masks_flat > 0)[0]
+    if len(valid_indices) == 0:
+        return {'actor_loss': 0, 'critic_loss': 0, 'entropy': 0}
+
+    # Work only with valid data
+    obs_valid = obs_flat[valid_indices]
+    actions_valid = actions_flat[valid_indices]
+    old_log_probs_valid = old_log_probs_flat[valid_indices]
+
     # Compute advantages and returns
     advantages, returns = compute_gae(
         data['rewards'], data['values'], data['dones'], data['masks']
@@ -221,47 +236,44 @@ def ppo_update(actor, critic, actor_optimizer, critic_optimizer, data,
     advantages = torch.FloatTensor(advantages).to(device)
     returns = torch.FloatTensor(returns).to(device)
     advantages_flat = advantages.reshape(T * N)
-    returns_flat = returns.mean(dim=1).repeat_interleave(N)  # Broadcast to agents
+    advantages_valid = advantages_flat[valid_indices]
+
+    # Pre-compute returns for critic
+    returns_mean = returns.mean(dim=1)
 
     # Training loop
+    num_valid = len(valid_indices)
     for epoch in range(num_epochs):
-        # Generate random permutation
-        perm = torch.randperm(T * N)
+        # Generate random permutation of valid indices only
+        perm = torch.randperm(num_valid)
 
-        for start in range(0, T * N, batch_size):
-            end = min(start + batch_size, T * N)
+        for start in range(0, num_valid, batch_size):
+            end = min(start + batch_size, num_valid)
             batch_indices = perm[start:end]
 
-            # Skip if batch has no valid agents
-            if masks_flat[batch_indices].sum() == 0:
-                continue
-
-            # Actor loss
-            dist = actor(obs_flat[batch_indices])
-            new_log_probs = dist.log_prob(actions_flat[batch_indices])
+            # Actor loss - work with pre-filtered data
+            dist = actor(obs_valid[batch_indices])
+            new_log_probs = dist.log_prob(actions_valid[batch_indices])
             entropy = dist.entropy()
 
             # Importance sampling ratio
-            ratio = torch.exp(new_log_probs - old_log_probs_flat[batch_indices])
+            ratio = torch.exp(new_log_probs - old_log_probs_valid[batch_indices])
 
             # Clipped surrogate objective
-            surr1 = ratio * advantages_flat[batch_indices]
-            surr2 = torch.clamp(ratio, 1 - clip_ratio, 1 + clip_ratio) * advantages_flat[batch_indices]
+            batch_advantages = advantages_valid[batch_indices]
+            surr1 = ratio * batch_advantages
+            surr2 = torch.clamp(ratio, 1 - clip_ratio, 1 + clip_ratio) * batch_advantages
 
-            # Apply mask to ignore padded agents
-            mask_batch = masks_flat[batch_indices]
-            actor_loss = -torch.min(surr1, surr2) * mask_batch
-            entropy_loss = -entropy * mask_batch
+            actor_loss = -torch.min(surr1, surr2).mean()
+            entropy_loss = -entropy_coef * entropy.mean()
 
-            actor_loss = actor_loss.sum() / mask_batch.sum()
-            entropy_loss = entropy_coef * entropy_loss.sum() / mask_batch.sum()
+            # Critic loss - batch unique states
+            original_indices = valid_indices[batch_indices]
+            state_indices = original_indices // N
+            unique_states, inverse_indices = torch.unique(state_indices, return_inverse=True)
 
-            # Critic loss
-            state_indices = batch_indices // N  # Map back to state indices
-            unique_state_indices = torch.unique(state_indices)
-
-            values = critic(states[unique_state_indices]).squeeze()
-            value_targets = returns_flat[unique_state_indices * N]  # Get corresponding returns
+            values = critic(states[unique_states]).squeeze()
+            value_targets = returns_mean[unique_states]
 
             critic_loss = F.mse_loss(values, value_targets)
 
@@ -327,7 +339,7 @@ def main():
     config = {
         'max_agents': 600,
         'rollout_length': 128,
-        'total_timesteps': 1_280,
+        'total_timesteps': 12_800,
         'learning_rate': 3e-4,
         'gamma': 0.99,
         'gae_lambda': 0.95,
@@ -359,8 +371,8 @@ def main():
     train_env = ComNetEnv(
         max_agents=config['max_agents'],
         step_list=train_steps,
-        alpha=1.0,
-        beta=0.001,
+        alpha=1,
+        beta=1,
         normalize_reward=True,
         share_reward=True,
         obs_include_global=True
@@ -369,8 +381,8 @@ def main():
     test_env = ComNetEnv(
         max_agents=config['max_agents'],
         step_list=test_steps,
-        alpha=1.0,
-        beta=0.001,
+        alpha=1,
+        beta=1,
         normalize_reward=True,
         share_reward=True,
         obs_include_global=True
