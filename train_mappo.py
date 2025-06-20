@@ -341,6 +341,8 @@ def main():
         'rollout_length': 128,
         'total_timesteps': 12_800,
         'learning_rate': 3e-4,
+        'alpha' :1.5,
+        'beta' : 0.002,
         'gamma': 0.99,
         'gae_lambda': 0.95,
         'clip_ratio': 0.2,
@@ -371,8 +373,8 @@ def main():
     train_env = ComNetEnv(
         max_agents=config['max_agents'],
         step_list=train_steps,
-        alpha=1,
-        beta=1,
+        alpha=config['alpha'],
+        beta=config['beta'],
         normalize_reward=True,
         share_reward=True,
         obs_include_global=True
@@ -381,8 +383,8 @@ def main():
     test_env = ComNetEnv(
         max_agents=config['max_agents'],
         step_list=test_steps,
-        alpha=1,
-        beta=1,
+        alpha=config['alpha'],
+        beta=config['beta'],
         normalize_reward=True,
         share_reward=True,
         obs_include_global=True
@@ -438,7 +440,7 @@ def main():
         )
 
         # Evaluation
-        if update % config['eval_interval'] == 0:
+        if update % config['eval_interval'] == 0 and update != 0:
             train_stats = evaluate(train_env, actor, num_episodes=3, device=config['device'])
             test_stats = evaluate(test_env, actor, num_episodes=5, device=config['device'])
 

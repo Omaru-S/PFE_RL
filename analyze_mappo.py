@@ -80,107 +80,72 @@ def analyze_policy(env, actor, num_episodes: int = 10, device: str = 'cpu'):
     }
 
 
-def plot_training_curves(log_dir: str):
-    """Plot training curves from saved logs."""
-    # This would read from your logging system
-    # For now, we'll create a placeholder
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+def plot_policy_analysis(stats: Dict, out_dir: str):
+    """Visualize and save selected plots of policy behavior."""
+    os.makedirs(out_dir, exist_ok=True)
 
-    # Placeholder for actual data
-    updates = np.arange(100)
-    rewards = np.random.randn(100).cumsum() + 100
-    knowledge = np.random.randn(100).cumsum() + 500
-    bytes_sent = np.random.randn(100).cumsum() + 10000
-
-    axes[0, 0].plot(updates, rewards)
-    axes[0, 0].set_title('Average Reward')
-    axes[0, 0].set_xlabel('Update')
-
-    axes[0, 1].plot(updates, knowledge)
-    axes[0, 1].set_title('Total Knowledge')
-    axes[0, 1].set_xlabel('Update')
-
-    axes[1, 0].plot(updates, bytes_sent)
-    axes[1, 0].set_title('Bytes Transmitted')
-    axes[1, 0].set_xlabel('Update')
-
-    axes[1, 1].axis('off')
-
-    plt.tight_layout()
-    return fig
-
-
-def plot_policy_analysis(stats: Dict):
-    """Visualize policy behavior."""
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
-
-    # Action distribution heatmap
-    action_dist = stats['action_counts'][:100, :]  # First 100 agents
+    # 1. Action distribution heatmap
+    fig, ax = plt.subplots(figsize=(6, 4))
+    action_dist = stats['action_counts'][:100, :]
     action_dist = action_dist / action_dist.sum(axis=1, keepdims=True)
+    sns.heatmap(action_dist.T, ax=ax, cmap='YlOrRd', xticklabels=False, yticklabels=['None', 'CAM', 'CPM', 'Both'])
+    ax.set_title('Action Distribution by Agent')
+    ax.set_xlabel('Agent ID')
+    fig.tight_layout()
+    fig.savefig(f"{out_dir}/action_distribution.png", dpi=150)
+    plt.close(fig)
 
-    sns.heatmap(action_dist.T, ax=axes[0, 0], cmap='YlOrRd',
-                xticklabels=False, yticklabels=['None', 'CAM', 'CPM', 'Both'])
-    axes[0, 0].set_title('Action Distribution by Agent')
-    axes[0, 0].set_xlabel('Agent ID')
+    # 2. Knowledge vs Bytes tradeoff
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.scatter(stats['bytes'], stats['knowledge'], alpha=0.5)
+    ax.set_title('Knowledge vs Bytes Tradeoff')
+    ax.set_xlabel('Bytes Transmitted')
+    ax.set_ylabel('Total Knowledge')
+    fig.tight_layout()
+    fig.savefig(f"{out_dir}/knowledge_vs_bytes.png", dpi=150)
+    plt.close(fig)
 
-    # CAM/CPM rates over time
-    axes[0, 1].plot(stats['cam_rates'], label='CAM Rate', alpha=0.7)
-    axes[0, 1].plot(stats['cpm_rates'], label='CPM Rate', alpha=0.7)
-    axes[0, 1].set_title('Communication Rates')
-    axes[0, 1].set_xlabel('Step')
-    axes[0, 1].set_ylabel('Fraction Sending')
-    axes[0, 1].legend()
-
-    # Knowledge vs Bytes tradeoff
-    axes[0, 2].scatter(stats['bytes'], stats['knowledge'], alpha=0.5)
-    axes[0, 2].set_title('Knowledge vs Bytes Tradeoff')
-    axes[0, 2].set_xlabel('Bytes Transmitted')
-    axes[0, 2].set_ylabel('Total Knowledge')
-
-    # Average action distribution
+    # 3. Overall action distribution
+    fig, ax = plt.subplots(figsize=(6, 4))
     total_actions = stats['action_counts'].sum(axis=0)
     action_names = ['None', 'CAM', 'CPM', 'Both']
-    axes[1, 0].bar(action_names, total_actions / total_actions.sum())
-    axes[1, 0].set_title('Overall Action Distribution')
-    axes[1, 0].set_ylabel('Fraction')
+    ax.bar(action_names, total_actions / total_actions.sum())
+    ax.set_title('Overall Action Distribution')
+    ax.set_ylabel('Fraction')
+    fig.tight_layout()
+    fig.savefig(f"{out_dir}/overall_action_distribution.png", dpi=150)
+    plt.close(fig)
 
-    # Knowledge efficiency
-    knowledge_efficiency = stats['knowledge'] / (stats['bytes'] + 1)
-    axes[1, 1].plot(knowledge_efficiency)
-    axes[1, 1].set_title('Knowledge Efficiency (Knowledge/Byte)')
-    axes[1, 1].set_xlabel('Step')
+    # 4. Temporal patterns (first episode)
+    if len(stats['action_patterns']) > 0 and len(stats['action_patterns'][0]) > 0:
+        pattern_episode = stats['action_patterns'][0]
+        max_agents = max(len(step_actions) for step_actions in pattern_episode)
+        max_steps = min(20, len(pattern_episode))
+        max_agents_to_show = min(50, max_agents)
 
-    # Temporal patterns
-    if len(stats['action_patterns']) > 0:
-        pattern_episode = stats['action_patterns'][0]  # First episode
-        if len(pattern_episode) > 0:
-            # Convert list of variable-length arrays to a padded matrix
-            max_agents = max(len(step_actions) for step_actions in pattern_episode)
-            max_steps = min(20, len(pattern_episode))
-            max_agents_to_show = min(50, max_agents)
+        pattern_matrix = np.full((max_steps, max_agents_to_show), -1, dtype=int)
+        for t, step_actions in enumerate(pattern_episode[:max_steps]):
+            n_agents = min(len(step_actions), max_agents_to_show)
+            pattern_matrix[t, :n_agents] = step_actions[:n_agents]
+        pattern_matrix = np.ma.masked_where(pattern_matrix == -1, pattern_matrix)
 
-            # Create padded pattern matrix
-            pattern_matrix = np.full((max_steps, max_agents_to_show), -1, dtype=int)
-            for t, step_actions in enumerate(pattern_episode[:max_steps]):
-                n_agents = min(len(step_actions), max_agents_to_show)
-                pattern_matrix[t, :n_agents] = step_actions[:n_agents]
-
-            # Mask invalid entries
-            pattern_matrix = np.ma.masked_where(pattern_matrix == -1, pattern_matrix)
-
-            sns.heatmap(pattern_matrix.T, ax=axes[1, 2], cmap='viridis',
-                        cbar_kws={'label': 'Action'}, mask=(pattern_matrix.T == -1))
-            axes[1, 2].set_title('Action Pattern (First Episode)')
-            axes[1, 2].set_xlabel('Step')
-            axes[1, 2].set_ylabel('Agent ID')
-
-    plt.tight_layout()
-    return fig
+        fig, ax = plt.subplots(figsize=(6, 4))
+        sns.heatmap(pattern_matrix.T, ax=ax, cmap='viridis', cbar_kws={'label': 'Action'},
+                    mask=(pattern_matrix.T == -1))
+        ax.set_title('Action Pattern (First Episode)')
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Agent ID')
+        fig.tight_layout()
+        fig.savefig(f"{out_dir}/temporal_action_pattern.png", dpi=150)
+        plt.close(fig)
 
 
-def compare_policies(env, actor_trained, num_episodes: int = 10, device: str = 'cpu'):
-    """Compare trained policy with naive baseline."""
+
+
+def compare_policies(env, actor_trained, num_episodes: int = 10, device: str = 'cpu', out_dir: str = './output'):
+    """Compare trained policy with naive baseline and save separate plots."""
     from policies import naive_policy
+    os.makedirs(out_dir, exist_ok=True)
 
     results = {
         'trained': {'rewards': [], 'knowledge': [], 'bytes': []},
@@ -217,13 +182,10 @@ def compare_policies(env, actor_trained, num_episodes: int = 10, device: str = '
         episode_reward = 0
         episode_knowledge = 0
         episode_bytes = 0
-        step_idx = 0
 
         while not done:
-            # Get naive actions
-            is_send_cam, is_send_cpm = naive_policy(env.step_list[env.current_step])
-
-            # Convert to action format
+            step = env.step_list[env.current_step]
+            is_send_cam, is_send_cpm = naive_policy(step)
             actions = np.zeros(env.max_agents, dtype=int)
             actions[:env.num_agents] = 1  # Default CAM
             actions[:env.num_cpm_agents] = np.where(is_send_cpm[:env.num_cpm_agents], 3, 1)
@@ -237,13 +199,13 @@ def compare_policies(env, actor_trained, num_episodes: int = 10, device: str = '
         results['naive']['knowledge'].append(episode_knowledge)
         results['naive']['bytes'].append(episode_bytes)
 
-    # Plot comparison
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-
+    # Plot each comparison individually
     metrics = ['rewards', 'knowledge', 'bytes']
     titles = ['Total Reward', 'Total Knowledge', 'Total Bytes']
+    filenames = ['comparison_reward.png', 'comparison_knowledge.png', 'comparison_bytes.png']
 
-    for i, (metric, title) in enumerate(zip(metrics, titles)):
+    for metric, title, fname in zip(metrics, titles, filenames):
+        fig, ax = plt.subplots(figsize=(6, 4))
         trained_mean = np.mean(results['trained'][metric])
         trained_std = np.std(results['trained'][metric])
         naive_mean = np.mean(results['naive'][metric])
@@ -253,28 +215,38 @@ def compare_policies(env, actor_trained, num_episodes: int = 10, device: str = '
         y = [naive_mean, trained_mean]
         err = [naive_std, trained_std]
 
-        axes[i].bar(x, y, yerr=err, capsize=10)
-        axes[i].set_title(title)
-        axes[i].set_ylabel('Value')
+        ax.bar(x, y, yerr=err, capsize=10)
+        ax.set_title(title)
+        ax.set_ylabel('Value')
 
-        # Add improvement percentage
+        # Add improvement annotation
         if metric == 'bytes':
             improvement = (naive_mean - trained_mean) / naive_mean * 100
-            axes[i].text(0.5, max(y) * 1.1, f'{improvement:.1f}% reduction',
-                         ha='center', fontsize=10, color='green')
+            sign = "reduction"
+            color = "green"
         else:
             improvement = (trained_mean - naive_mean) / naive_mean * 100
-            axes[i].text(0.5, max(y) * 1.1, f'{improvement:.1f}% improvement',
-                         ha='center', fontsize=10, color='green')
+            sign = "improvement"
+            color = "green" if improvement >= 0 else "red"
 
-    plt.tight_layout()
-    return fig, results
+        # Position text above the taller bar
+        top_y = max(y) + max(err) * 1.2
+        ax.text(0.5, top_y, f"{improvement:+.1f}% {sign}", ha='center', fontsize=10, color=color)
+
+
+        fig.tight_layout()
+        fig.savefig(f"{out_dir}/{fname}", dpi=150)
+        plt.close(fig)
+
+    return results
 
 
 def main():
     """Main analysis script."""
+    import datetime
+
     # Configuration
-    model_dir = "mappo_runs/20250610_151019"  # Update with your actual directory
+    model_dir = "mappo_runs/20250619_190642"  # Update with your actual directory
     checkpoint = "best_model.pt"
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -282,13 +254,16 @@ def main():
     with open(f"{model_dir}/config.json", 'r') as f:
         config = json.load(f)
 
+    alpha = config.get('alpha', 1.0)
+    beta = config.get('beta', 0.001)
+
     # Create test environment
     test_steps = list(range(800, 1000))  # Adjust based on your data
     test_env = ComNetEnv(
         max_agents=config['max_agents'],
         step_list=test_steps,
-        alpha=1.0,
-        beta=0.001,
+        alpha=alpha,
+        beta=beta,
         normalize_reward=True,
         share_reward=True,
         obs_include_global=True
@@ -296,7 +271,6 @@ def main():
 
     # Get dimensions
     obs_dim = test_env.observation_space.shape[0]
-    # Reset environment first to initialize state variables
     test_env.reset()
     state_dim = len(test_env.get_state())
 
@@ -308,25 +282,23 @@ def main():
     )
     print(f"Model loaded from update {update}")
 
+    # Output directory
+    # Output directory based on alpha and beta values
+    out_dir = f"output/analyze_alpha{alpha}_beta{beta}"
+    os.makedirs(out_dir, exist_ok=True)
+
     # Analyze policy
     print("\nAnalyzing policy behavior...")
     stats = analyze_policy(test_env, actor, num_episodes=10, device=device)
 
     # Create visualizations
     print("Creating visualizations...")
+    plot_policy_analysis(stats, out_dir)
 
-    # Policy analysis plots
-    fig1 = plot_policy_analysis(stats)
-    plt.savefig(f"{model_dir}/policy_analysis.png", dpi=150, bbox_inches='tight')
-    plt.show()
-
-    # Compare with baseline
     print("\nComparing with naive baseline...")
-    fig2, comparison_results = compare_policies(test_env, actor, num_episodes=10, device=device)
-    plt.savefig(f"{model_dir}/policy_comparison.png", dpi=150, bbox_inches='tight')
-    plt.show()
+    comparison_results = compare_policies(test_env, actor, num_episodes=10, device=device, out_dir=out_dir)
 
-    # Print summary statistics
+    # Summary statistics
     print("\n=== Summary Statistics ===")
     print(f"Average CAM rate: {stats['cam_rates'].mean():.3f} ± {stats['cam_rates'].std():.3f}")
     print(f"Average CPM rate: {stats['cpm_rates'].mean():.3f} ± {stats['cpm_rates'].std():.3f}")
@@ -339,6 +311,7 @@ def main():
         for metric in ['rewards', 'knowledge', 'bytes']:
             values = comparison_results[policy][metric]
             print(f"  {metric}: {np.mean(values):.1f} ± {np.std(values):.1f}")
+
 
 
 if __name__ == "__main__":
