@@ -246,7 +246,7 @@ def main():
     import datetime
 
     # Configuration
-    model_dir = "mappo_runs/20250619_190642"  # Update with your actual directory
+    model_dir = "mappo_runs/20250617_102001"  # Update with your actual directory
     checkpoint = "best_model.pt"
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -257,6 +257,8 @@ def main():
     alpha = config.get('alpha', 1.0)
     beta = config.get('beta', 0.001)
 
+    print("Alpha : " + str(alpha))
+    print("Beta : " + str(beta))
     # Create test environment
     test_steps = list(range(800, 1000))  # Adjust based on your data
     test_env = ComNetEnv(
